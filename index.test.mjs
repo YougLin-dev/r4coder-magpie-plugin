@@ -48,14 +48,8 @@ test("config: registers r4coder defaults and keeps user config", async () => {
   assert.equal(empty.provider.r4coder.name, "R4 Coder");
   assert.equal(empty.provider.r4coder.npm, "@ai-sdk/openai-compatible");
   assert.equal(empty.provider.r4coder.api, `${BASE}/v1`);
-  assert.equal(empty.provider.r4coder.models["deepseek-v4.1-flash"].name, "DeepSeek V4.1 Flash");
-  assert.equal(empty.provider.r4coder.models["deepseek-v4.1-flash"].limit.context, 1048576);
-  assert.equal(empty.provider.r4coder.models["deepseek-v4.1-flash"].limit.output, 393216);
-  assert.equal(empty.provider.r4coder.models["deepseek-v4.1-flash"].reasoning, true);
-  assert.equal(empty.provider.r4coder.models["deepseek-v4.1-flash"].attachment, true);
-  assert.deepEqual(empty.provider.r4coder.models["deepseek-v4.1-flash"].variants.high, {
-    reasoningEffort: "high",
-  });
+  // live-only: no model list is declared before provider.models runs
+  assert.equal(empty.provider.r4coder.models, undefined);
 
   const mine = {
     provider: {
@@ -68,7 +62,7 @@ test("config: registers r4coder defaults and keeps user config", async () => {
   await plugin.config(mine);
   assert.equal(mine.provider.r4coder.name, "Mine");
   assert.equal(mine.provider.r4coder.npm, "@ai-sdk/openai-compatible");
-  // a list the user gave stands as it is: no fallback is added beside it
+  // a list the user gave stands as it is
   assert.deepEqual(mine.provider.r4coder.models, { "my-model": { name: "My model" } });
 });
 

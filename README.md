@@ -114,11 +114,10 @@ reasoning variants), and per-million-token prices for input, output, cache
 read and cache write. Prices come from `pricing_effective` when the server
 provides it, otherwise from the base `pricing` block.
 
-A fresh provider starts with one stable fallback model
-(`deepseek-v4.1-flash`) so the provider card is not empty before magpie's
-first live catalog fetch; the live list replaces it. The full catalog is
-never hardcoded. If R4 is unreachable, magpie keeps the last list it fetched
-and says why.
+There is no hardcoded model list: the catalog is authoritative. A fresh
+provider can be empty until magpie's first live catalog fetch; **Fetch
+models** asks immediately. If R4 is unreachable, magpie keeps the last list
+it fetched and says why.
 
 ## Self-hosted R4 Coder
 
@@ -135,10 +134,8 @@ The value is the service root; a trailing `/v1` is accepted and normalized.
 
 - OAuth or account-password sign-in. R4 Coder's API surface is key-based;
   create a key in the dashboard.
-- A full static model catalog. One stable fallback model
-  (`deepseek-v4.1-flash`) keeps a fresh provider from opening empty; the
-  live catalog replaces it, and account-specific paid-gate models are never
-  guessed.
+- A static fallback model list. Inventing context or output numbers would
+  be worse than showing the live catalog.
 
 ## Development
 

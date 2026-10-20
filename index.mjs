@@ -18,32 +18,8 @@
 const PROVIDER = "r4coder";
 const DEFAULT_BASE = "https://api.r4.codes";
 const NPM = "@ai-sdk/openai-compatible";
-const CLIENT = "@r4coder/magpie-plugin/0.1.2";
+const CLIENT = "@r4coder/magpie-plugin/0.1.1";
 const REQUEST_TIMEOUT_MS = 15_000;
-
-// One stable model so a freshly added provider is not empty before its first
-// live catalog fetch. The live /v1/models + /v1/models/info list replaces it.
-// This is a fallback, not the catalog: the platform's list is authoritative.
-const FALLBACK_MODELS = {
-  "deepseek-v4.1-flash": {
-    id: "deepseek-v4.1-flash",
-    name: "DeepSeek V4.1 Flash",
-    reasoning: true,
-    tool_call: true,
-    attachment: true,
-    modalities: { input: ["text", "image"], output: ["text"] },
-    limit: { context: 1_048_576, output: 393_216 },
-    cost: { input: 0.15, output: 0.6, cache_read: 0.003, cache_write: 0 },
-    variants: {
-      minimal: { reasoningEffort: "minimal" },
-      low: { reasoningEffort: "low" },
-      medium: { reasoningEffort: "medium" },
-      high: { reasoningEffort: "high" },
-      xhigh: { reasoningEffort: "xhigh" },
-      max: { reasoningEffort: "max" },
-    },
-  },
-};
 
 class R4CoderError extends Error {
   constructor(status, message) {
@@ -396,16 +372,11 @@ export async function R4CoderPlugin() {
         cfg.provider[PROVIDER] && typeof cfg.provider[PROVIDER] === "object"
           ? cfg.provider[PROVIDER]
           : {};
-      const userModels =
-        was.models && typeof was.models === "object" && Object.keys(was.models).length > 0
-          ? was.models
-          : FALLBACK_MODELS;
       cfg.provider[PROVIDER] = {
         name: "R4 Coder",
         npm: NPM,
         api: apiBase(),
         ...was,
-        models: userModels,
       };
     },
 
@@ -460,7 +431,6 @@ export const _internal = {
   DEFAULT_BASE,
   NPM,
   CLIENT,
-  FALLBACK_MODELS,
   R4CoderError,
   baseURL,
   apiBase,
