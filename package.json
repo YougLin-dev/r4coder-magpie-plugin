@@ -1,6 +1,6 @@
 {
   "name": "@r4coder/magpie-plugin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "R4 Coder (api.r4.codes) provider plugin for magpie: API-key sign-in, live model catalog and usage card.",
   "keywords": [
     "magpie",

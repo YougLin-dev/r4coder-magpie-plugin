@@ -35,9 +35,6 @@ magpie plugin add .
 magpie plugin login r4coder
 ```
 
-This repository is listed under magpie's **Plugins → Discover → Unofficial**
-through the `magpie-plugin` GitHub topic.
-
 OpenCode (optional; the same plugin):
 
 ```json
@@ -45,6 +42,10 @@ OpenCode (optional; the same plugin):
 ```
 
 then `opencode auth login` and pick **R4 Coder API key**.
+
+The plugin is listed under magpie's **Plugins → Discover → Unofficial**
+through the `magpie-plugin` GitHub topic on
+[`YougLin-dev/r4coder-magpie-plugin`](https://github.com/YougLin-dev/r4coder-magpie-plugin).
 
 The plugin has no runtime dependencies and runs in magpie's plugin host (and
 in OpenCode, which shares the hook shape).
@@ -113,8 +114,11 @@ reasoning variants), and per-million-token prices for input, output, cache
 read and cache write. Prices come from `pricing_effective` when the server
 provides it, otherwise from the base `pricing` block.
 
-There is no hardcoded model list: the catalog is authoritative. If R4 is
-unreachable, magpie keeps the last list it fetched and says why.
+A fresh provider starts with one stable fallback model
+(`deepseek-v4.1-flash`) so the provider card is not empty before magpie's
+first live catalog fetch; the live list replaces it. The full catalog is
+never hardcoded. If R4 is unreachable, magpie keeps the last list it fetched
+and says why.
 
 ## Self-hosted R4 Coder
 
@@ -131,8 +135,10 @@ The value is the service root; a trailing `/v1` is accepted and normalized.
 
 - OAuth or account-password sign-in. R4 Coder's API surface is key-based;
   create a key in the dashboard.
-- A static fallback model list. Inventing context or output numbers would
-  be worse than showing the live catalog.
+- A full static model catalog. One stable fallback model
+  (`deepseek-v4.1-flash`) keeps a fresh provider from opening empty; the
+  live catalog replaces it, and account-specific paid-gate models are never
+  guessed.
 
 ## Development
 
