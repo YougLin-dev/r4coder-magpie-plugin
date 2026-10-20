@@ -18,7 +18,7 @@
 const PROVIDER = "r4coder";
 const DEFAULT_BASE = "https://api.r4.codes";
 const NPM = "@ai-sdk/openai-compatible";
-const CLIENT = "@r4coder/magpie-plugin/0.1.1";
+const CLIENT = "@r4coder/magpie-plugin/0.2.0";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 class R4CoderError extends Error {
@@ -241,6 +241,42 @@ function keyLabel(key) {
   return name || start || "R4 Coder key";
 }
 
+// accountIdentity is who the account is, for magpie's account list: the
+// signed-in account's email when the server tells it, else the key's own
+// name (a key is the credential, and its name is what the user set). uid is
+// the key's start: two keys of one account stay two accounts, as magpie
+// requires a matching uid to replace a sign-in.
+function accountIdentity(meta, keyInfo) {
+  const email = typeof meta?.account?.email === "string" ? meta.account.email.trim() : "";
+  const key = keyInfo ?? meta?.key ?? null;
+  const name = typeof key?.name === "string" ? key.name.trim() : "";
+  const start = typeof key?.start === "string" ? key.start.trim() : "";
+  return { label: email || name || start, uid: start, email };
+}
+
+// rememberIdentity saves the account's name into the host's auth store, so
+// magpie shows the account rather than "API key …tBcG". Runs in the
+// account's own scope; the key itself is kept untouched. getAuth is read
+// again just before the write: the usage read can take seconds, and the
+// host's auth.set replaces the whole record — a stale snapshot would
+// resurrect a removed key or overwrite a replacement in the same slot.
+async function rememberIdentity(client, getAuth, key, identity) {
+  if (!client?.auth?.set || !identity?.label || typeof getAuth !== "function") return;
+  const auth = await getAuth();
+  if (auth?.type !== "api" || typeof auth.key !== "string" || auth.key !== key) return;
+  if (auth.accountId === identity.label && (!identity.uid || auth.uid === identity.uid)) return;
+  try {
+    await client.auth.set({
+      path: { id: PROVIDER },
+      body: {
+        ...auth,
+        accountId: identity.label,
+        ...(identity.uid ? { uid: identity.uid } : {}),
+      },
+    });
+  } catch {}
+}
+
 function localTimeZone() {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -250,9 +286,40 @@ function localTimeZone() {
   }
 }
 
+// planBalanceWindow turns a package's remaining money into one window, for
+// accounts whose grants carry no rate windows (packages bought before R4
+// recorded them): magpie's Routes page and routing read windows only, so
+// without one the account shows "what's left not known yet". The window is
+// the plan budget: used = (total - remaining) / total, resetting when the
+// grant that still has money expires (use it or lose it). A wallet balance
+// is open-ended, so an account that has one is left unknown instead.
+function planBalanceWindow(plan) {
+  if (!plan) return null;
+  const total = optionalNumber(plan.total_usd);
+  const remaining = optionalNumber(plan.remaining_usd);
+  if (!(total > 0) || remaining === null) return null;
+  const usedUSD = Math.max(0, Math.min(total, total - remaining));
+  const grants = Array.isArray(plan.grants) ? plan.grants : [];
+  const expiry = grants
+    .filter((g) => number(g?.remaining_usd) > 0 && typeof g?.expires_at === "string")
+    .map((g) => g.expires_at)
+    .sort()[0];
+  const resetsAt = expiry || (typeof plan.expires_at === "string" ? plan.expires_at : "");
+  return {
+    name: "Plan balance",
+    used: (usedUSD / total) * 100,
+    amount: usedUSD,
+    limit: total,
+    unit: "USD",
+    span: 0,
+    ...(resetsAt ? { resetsAt } : {}),
+  };
+}
+
 // usageOf combines the account-level card (/v1/cli/meta: package windows,
 // wallet, expiry) with the key-level card (/v1/cli/key: this key's spend
-// limit). Either endpoint may be missing on an older server.
+// limit). Either endpoint may be missing on an older server. It also tells
+// who the account is, for the host's account list.
 async function usageOf(key) {
   const [metaResult, keyResult] = await Promise.allSettled([
     requestJSON("/v1/cli/meta", key),
@@ -269,19 +336,28 @@ async function usageOf(key) {
       failures.find((e) => e instanceof R4CoderError && e.status !== 404) ?? failures[0];
     if (first instanceof R4CoderError && first.status === 401) {
       return {
-        error: `R4 Coder rejected this API key: ${first.message}`,
-        signIn: "expired",
+        card: {
+          error: `R4 Coder rejected this API key: ${first.message}`,
+          signIn: "expired",
+        },
+        identity: null,
       };
     }
     if (first instanceof R4CoderError && first.status === 403) {
       return {
-        error: `R4 Coder can't show this key's usage: ${first.message}`,
-        signIn: "kept",
+        card: {
+          error: `R4 Coder can't show this key's usage: ${first.message}`,
+          signIn: "kept",
+        },
+        identity: null,
       };
     }
     return {
-      error: `R4 Coder usage is unavailable: ${first?.message ?? "no answer"}`,
-      signIn: "kept",
+      card: {
+        error: `R4 Coder usage is unavailable: ${first?.message ?? "no answer"}`,
+        signIn: "kept",
+      },
+      identity: null,
     };
   }
 
@@ -338,11 +414,22 @@ async function usageOf(key) {
     });
   }
 
+  const walletBalance = wallet ? optionalNumber(wallet.balance_usd) : null;
+  // No rate windows and no wallet: the plan balance is the whole allowance,
+  // as one window (see planBalanceWindow). bySpan, not windows: a key spend
+  // limit is a separate cap and must not hide the plan's balance.
+  if (bySpan.size === 0 && (walletBalance === null || walletBalance <= 0)) {
+    const balanceWindow = planBalanceWindow(plan);
+    if (balanceWindow) windows.push(balanceWindow);
+  }
+
   let balance = "";
-  if (wallet && optionalNumber(wallet.balance_usd) !== null) {
-    balance = usd(wallet.balance_usd);
-  } else if (windows.length === 0 && plan && optionalNumber(plan.remaining_usd) !== null) {
+  if (walletBalance !== null && walletBalance > 0) {
+    balance = usd(walletBalance);
+  } else if (plan && optionalNumber(plan.remaining_usd) !== null) {
     balance = usd(plan.remaining_usd);
+  } else if (walletBalance !== null) {
+    balance = usd(walletBalance);
   }
 
   const planName =
@@ -352,18 +439,23 @@ async function usageOf(key) {
         ? "Pay as you go"
         : "R4 Coder";
   const until = typeof plan?.expires_at === "string" ? plan.expires_at : "";
+  const identity = accountIdentity(meta, keyInfo);
 
   return {
-    plan: planName,
-    user: keyLabel(keyInfo),
-    ...(until ? { until } : {}),
-    ...(balance ? { balance } : {}),
-    windows,
-    signIn: "kept",
+    card: {
+      plan: planName,
+      user: identity.email || keyLabel(keyInfo),
+      ...(until ? { until } : {}),
+      ...(balance ? { balance } : {}),
+      windows,
+      signIn: "kept",
+    },
+    identity,
   };
 }
 
-export async function R4CoderPlugin() {
+export async function R4CoderPlugin(input = {}) {
+  const client = input?.client;
   return {
     config: async (cfg) => {
       if (!cfg || typeof cfg !== "object") return;
@@ -404,7 +496,9 @@ export async function R4CoderPlugin() {
           return { error: "Sign in with an R4 Coder API key", signIn: "kept" };
         }
         try {
-          return await usageOf(auth.key);
+          const { card, identity } = await usageOf(auth.key);
+          if (identity?.label) await rememberIdentity(client, getAuth, auth.key, identity);
+          return card;
         } catch (e) {
           return {
             error: `R4 Coder usage is unavailable: ${e?.message ?? String(e)}`,
@@ -441,6 +535,9 @@ export const _internal = {
   windowName,
   usd,
   keyLabel,
+  accountIdentity,
+  planBalanceWindow,
+  rememberIdentity,
   localTimeZone,
 };
 

@@ -335,6 +335,196 @@ test("usage: no plan and no wallet but a key limit still shows the key window", 
   assert.equal(u.windows[0].used, 25);
 });
 
+test("usage: names the account from /v1/cli/meta and remembers it", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      key: { name: "r4-cli", start: "coder_xjT2kUN2" },
+      account: { email: "me@r4.codes" },
+      plan: { package_name: "Pro", expires_at: "2026-12-01T00:00:00.000Z" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "1", held_usd: "0" }),
+  });
+
+  const writes = [];
+  let auth = { type: "api", key: "coder_test" };
+  const plugin = await R4CoderPlugin({
+    client: {
+      auth: {
+        set: async (opts) => {
+          writes.push(opts);
+          auth = opts.body;
+        },
+      },
+    },
+  });
+  const u = await plugin.auth.usage(async () => auth);
+  assert.equal(u.user, "me@r4.codes");
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].path, { id: "r4coder" });
+  assert.equal(writes[0].body.type, "api");
+  assert.equal(writes[0].body.key, "coder_test");
+  assert.equal(writes[0].body.accountId, "me@r4.codes");
+  // the key's start tells two keys of one account apart on a later sign-in
+  assert.equal(writes[0].body.uid, "coder_xjT2kUN2");
+
+  // a second read with the saved auth writes nothing
+  await plugin.auth.usage(async () => auth);
+  assert.equal(writes.length, 1);
+});
+
+test("usage: a sign-out during the poll is not undone", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      key: { name: "r4-cli", start: "coder_xjT2kUN2" },
+      account: { email: "me@r4.codes" },
+      plan: { package_name: "Pro" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "1", held_usd: "0" }),
+  });
+
+  const writes = [];
+  let reads = 0;
+  const plugin = await R4CoderPlugin({
+    client: { auth: { set: async (opts) => writes.push(opts) } },
+  });
+  const u = await plugin.auth.usage(async () =>
+    ++reads === 1 ? { type: "api", key: "coder_test" } : undefined,
+  );
+  // the card is still for the poll's key, but the removed sign-in is not
+  // written back
+  assert.equal(u.user, "me@r4.codes");
+  assert.equal(writes.length, 0);
+});
+
+test("usage: a key replaced during the poll is not overwritten", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      key: { name: "r4-cli", start: "coder_xjT2kUN2" },
+      account: { email: "me@r4.codes" },
+      plan: { package_name: "Pro" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "1", held_usd: "0" }),
+  });
+
+  const writes = [];
+  let reads = 0;
+  const plugin = await R4CoderPlugin({
+    client: { auth: { set: async (opts) => writes.push(opts) } },
+  });
+  await plugin.auth.usage(async () =>
+    ++reads === 1 ? { type: "api", key: "coder_test" } : { type: "api", key: "coder_replaced" },
+  );
+  assert.equal(writes.length, 0);
+});
+
+test("usage: a plan with no rate windows becomes one Plan balance window", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      key: { name: "r4-cli", start: "coder_xjT2kUN2" },
+      plan: {
+        package_name: "Code Pro +2",
+        remaining_usd: "282.288725",
+        total_usd: "420",
+        expires_at: "2026-10-20T18:13:59.910Z",
+        limit_windows: [],
+        grants: [
+          { package_name: "Code Pro", remaining_usd: "0", expires_at: "2026-10-20T18:13:59.910Z" },
+          {
+            package_name: "Code Max",
+            remaining_usd: "282.288725",
+            expires_at: "2026-10-21T19:39:36.997Z",
+          },
+          { package_name: "Free", remaining_usd: "0", expires_at: "2093-02-22T03:09:12.474Z" },
+        ],
+      },
+      wallet: null,
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "1", held_usd: "0" }),
+  });
+
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  assert.equal(u.balance, "$282.29");
+  assert.equal(u.windows.length, 1);
+  const w = u.windows[0];
+  assert.equal(w.name, "Plan balance");
+  assert.equal(w.unit, "USD");
+  assert.equal(w.limit, 420);
+  assert.ok(Math.abs(w.amount - 137.711275) < 1e-9);
+  assert.ok(Math.abs(w.used - (137.711275 / 420) * 100) < 1e-9);
+  // the money lasts until the grant that still has it expires, not the
+  // empty head grant's expiry
+  assert.equal(w.resetsAt, "2026-10-21T19:39:36.997Z");
+});
+
+test("usage: Plan balance appears alongside a key limit", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: { package_name: "Pro", remaining_usd: "90", total_usd: "100", limit_windows: [] },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: "10", spent_usd: "1", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  // a key spend limit is a separate cap; it must not hide the plan balance
+  assert.deepEqual(u.windows.map((w) => w.name).sort(), ["Key limit", "Plan balance"]);
+  const plan = u.windows.find((w) => w.name === "Plan balance");
+  assert.equal(plan.amount, 10);
+  assert.equal(plan.limit, 100);
+  assert.equal(plan.used, 10);
+  const key = u.windows.find((w) => w.name === "Key limit");
+  assert.equal(key.used, 10);
+});
+
+test("usage: real rate windows suppress the Plan balance window", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: {
+        package_name: "Pro",
+        remaining_usd: "90",
+        total_usd: "100",
+        limit_windows: [
+          {
+            duration_seconds: 18000,
+            ceiling_usd: "10",
+            consumed_usd: "5",
+            resets_at: "2026-10-20T06:00:00.000Z",
+          },
+        ],
+      },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "0", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  // the grant's own 5-hour window is the allowance; the plan balance is a
+  // fallback only when there is no rate window
+  assert.deepEqual(
+    u.windows.map((w) => w.name),
+    ["5 hours"],
+  );
+  assert.equal(
+    u.windows.some((w) => w.name === "Plan balance"),
+    false,
+  );
+});
+
+test("usage: a wallet balance leaves the plan balance unknown", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: { package_name: "Pro", remaining_usd: "10", total_usd: "20" },
+      wallet: { balance_usd: "5" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "1", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  // a wallet pays past the plan, so routing must not treat the plan as the
+  // account's whole allowance
+  assert.equal(u.windows.length, 0);
+  assert.equal(u.balance, "$5.00");
+});
+
 test("usage: a rejected key is marked expired", async (t) => {
   mockFetch(t, {
     "/v1/cli/meta": jsonResponse({ error: { message: "Invalid API key" } }, { status: 401 }),

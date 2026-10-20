@@ -66,7 +66,15 @@ The key is stored by the host, not written into a provider config:
 - OpenCode: its own `auth.json`, in the same `{ "type": "api", … }` shape.
 
 Uninstalling the plugin or running `magpie plugin logout r4coder` removes
-the sign-in.
+the sign-in. The plugin also saves the account's email (or the key's own
+name) as `accountId` and the key's start as `uid`, so magpie names the
+account instead of showing `API key …`.
+
+Re-adding a key that is still signed in: remove the old account first
+(`magpie plugin logout r4coder`, or the account row's remove action). magpie's
+sign-in merge only replaces an unnamed account by the same secret, so with
+the account named a second paste of the same key becomes a second account.
+This is a magpie-side limitation, not a plugin bug.
 
 ### Migrating from `r4 opencode`
 
@@ -97,14 +105,25 @@ each account sees exactly the models it can call.
 
 magpie's `magpie quota` / Usage page reads:
 
-- `GET /v1/cli/meta` for the package name and expiry, package limit windows
-  (`5 hours`, `7 days`, …), and wallet balance.
+- `GET /v1/cli/meta` for the account email, package name and expiry,
+  package limit windows (`5 hours`, `7 days`, …), and wallet balance.
 - `GET /v1/cli/key` for this key's spend limit, spend, in-flight hold and
   remaining amount.
 
 A key limit is shown as a lifetime `Key limit` window; package windows show
-their own reset time. A revoked key is marked as an expired sign-in; a
-monitoring key's 403 is reported as an error without marking the sign-in.
+their own reset time. When a package has no rate windows (grants bought
+before R4 recorded them) and there is no wallet, the package's remaining
+money is shown as one `Plan balance` window (`used / total USD`), so magpie's
+Routes page and routing know what the account has left instead of "what's
+left not known yet". A wallet balance is open-ended, so an account that has
+one stays unknown to routing and shows the wallet balance instead.
+
+The account is named by the email `/v1/cli/meta` reports; the plugin saves it
+into the host's auth store, so magpie's account rows and Routes page show the
+account rather than `API key …tBcG`. Against an older server without
+`account.email`, the key's own name (and start) is used. A revoked key is
+marked as an expired sign-in; a monitoring key's 403 is reported as an error
+without marking the sign-in.
 
 ## Models and pricing
 
