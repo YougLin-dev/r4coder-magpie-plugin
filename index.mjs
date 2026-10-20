@@ -18,7 +18,7 @@
 const PROVIDER = "r4coder";
 const DEFAULT_BASE = "https://api.r4.codes";
 const NPM = "@ai-sdk/openai-compatible";
-const CLIENT = "@r4coder/magpie-plugin/0.1.0";
+const CLIENT = "@r4coder/magpie-plugin/0.1.1";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 class R4CoderError extends Error {

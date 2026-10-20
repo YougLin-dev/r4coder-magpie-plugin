@@ -14,17 +14,17 @@ both.
 
 ## Install
 
-From the public plugin repository (before the npm release):
-
-```sh
-magpie plugin add github:YougLin-dev/magpie-plugin
-magpie plugin login r4coder
-```
-
-Once published to npm:
+From npm:
 
 ```sh
 magpie plugin add @r4coder/magpie-plugin
+magpie plugin login r4coder
+```
+
+From the public repository (alternative):
+
+```sh
+magpie plugin add github:YougLin-dev/r4coder-magpie-plugin
 magpie plugin login r4coder
 ```
 
