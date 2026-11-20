@@ -509,7 +509,7 @@ test("usage: real rate windows suppress the Plan balance window", async (t) => {
   );
 });
 
-test("usage: a wallet balance leaves the plan balance unknown", async (t) => {
+test("usage: a wallet balance rides beside the plan budget window", async (t) => {
   mockFetch(t, {
     "/v1/cli/meta": jsonResponse({
       plan: { package_name: "Pro", remaining_usd: "10", total_usd: "20" },
@@ -519,10 +519,158 @@ test("usage: a wallet balance leaves the plan balance unknown", async (t) => {
   });
   const plugin = await R4CoderPlugin();
   const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
-  // a wallet pays past the plan, so routing must not treat the plan as the
-  // account's whole allowance
+  // R4's plan is a budget, not a rate window; a wallet only pays past its
+  // end, so the plan is still the allowance magpie routes on, and the wallet
+  // is the balance shown beside it.
+  assert.equal(u.windows.length, 1);
+  const w = u.windows[0];
+  assert.equal(w.name, "Plan balance");
+  assert.equal(w.limit, 20);
+  assert.equal(w.amount, 10);
+  assert.equal(w.used, 50);
+  assert.equal(u.balance, "$5.00");
+});
+
+test("usage: a spent package with a wallet leaves routing to the wallet", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: {
+        package_name: "Pro",
+        remaining_usd: "0",
+        total_usd: "20",
+        expires_at: "2026-12-10T12:45:47.018Z",
+        limit_windows: [],
+      },
+      wallet: { balance_usd: "5" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "20", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  // the wallet pays past the package's end; a 100% window would make magpie
+  // hold the account back while the wallet still pays
   assert.equal(u.windows.length, 0);
   assert.equal(u.balance, "$5.00");
+});
+
+test("usage: a spent package without a wallet still shows what is left", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: {
+        package_name: "Pro",
+        remaining_usd: "0",
+        total_usd: "20",
+        expires_at: "2026-12-10T12:45:47.018Z",
+        limit_windows: [],
+      },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "20", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  assert.equal(u.windows.length, 1);
+  assert.equal(u.windows[0].name, "Plan balance");
+  assert.equal(u.windows[0].used, 100);
+  assert.equal(u.balance, "$0.00");
+});
+
+test("usage: a wallet keeps real rate windows as the allowance", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: {
+        package_name: "Pro",
+        remaining_usd: "90",
+        total_usd: "100",
+        limit_windows: [
+          {
+            duration_seconds: 18000,
+            ceiling_usd: "10",
+            consumed_usd: "5",
+            resets_at: "2026-10-20T06:00:00.000Z",
+          },
+        ],
+      },
+      wallet: { balance_usd: "5" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "0", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  assert.deepEqual(
+    u.windows.map((w) => w.name),
+    ["5 hours"],
+  );
+  assert.equal(u.balance, "$5.00");
+});
+
+test("usage: the funded grant that ends first sets the plan window", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: {
+        package_name: "Pro",
+        remaining_usd: "30",
+        total_usd: "30",
+        expires_at: "2026-12-01T00:00:00.000Z",
+        limit_windows: [],
+        grants: [
+          {
+            package_name: "Small",
+            remaining_usd: "20",
+            starts_at: "2026-11-01T00:00:00.000Z",
+            expires_at: "2026-12-01T00:00:00.000Z",
+          },
+          {
+            package_name: "Trial",
+            remaining_usd: "10",
+            starts_at: "2026-10-01T00:00:00.000Z",
+            expires_at: "2026-10-15T00:00:00.000Z",
+          },
+        ],
+      },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "0", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  assert.equal(u.windows.length, 1);
+  // use it or lose it: the money is gone when the first-funded grant ends
+  assert.equal(u.windows[0].resetsAt, "2026-10-15T00:00:00.000Z");
+  assert.equal(u.windows[0].name, "14 days");
+});
+
+test("usage: the plan budget window is named by the grant's own span", async (t) => {
+  mockFetch(t, {
+    "/v1/cli/meta": jsonResponse({
+      plan: {
+        package_name: "Code Pro +1",
+        remaining_usd: "136.847314",
+        total_usd: "144",
+        expires_at: "2026-12-10T12:45:47.018Z",
+        limit_windows: [],
+        grants: [
+          {
+            package_name: "Code Pro",
+            remaining_usd: "136.847314",
+            total_usd: "144",
+            starts_at: "2026-11-10T12:45:46.963Z",
+            expires_at: "2026-12-10T12:45:47.018Z",
+            limit_windows: [],
+          },
+        ],
+      },
+      wallet: { balance_usd: "11.301087" },
+    }),
+    "/v1/cli/key": jsonResponse({ limit_usd: null, spent_usd: "0", held_usd: "0" }),
+  });
+  const plugin = await R4CoderPlugin();
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "coder_test" }));
+  const w = u.windows.find((x) => x.span === 2592000);
+  assert.ok(w, "the package's 30-day window");
+  assert.equal(w.name, "30 days");
+  assert.equal(w.resetsAt, "2026-12-10T12:45:47.018Z");
+  assert.equal(w.limit, 144);
+  assert.ok(Math.abs(w.amount - 7.152686) < 1e-9);
+  assert.equal(u.balance, "$11.30");
 });
 
 test("usage: a rejected key is marked expired", async (t) => {

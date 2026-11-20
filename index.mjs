@@ -286,13 +286,16 @@ function localTimeZone() {
   }
 }
 
-// planBalanceWindow turns a package's remaining money into one window, for
-// accounts whose grants carry no rate windows (packages bought before R4
-// recorded them): magpie's Routes page and routing read windows only, so
-// without one the account shows "what's left not known yet". The window is
-// the plan budget: used = (total - remaining) / total, resetting when the
-// grant that still has money expires (use it or lose it). A wallet balance
-// is open-ended, so an account that has one is left unknown instead.
+// planBalanceWindow turns a package's remaining money into one window: R4's
+// packages are bought as a monthly budget (/v1/cli/meta: plan.total_usd,
+// plan.remaining_usd, grants with starts_at/expires_at) and carry no rate
+// windows since the weekly and five-hour windows were retired, so the plan
+// budget is the account's whole allowance and magpie's Routes page and
+// routing read it as one window: used = (total - remaining) / total,
+// resetting when the grant that still has money expires (use it or lose it).
+// A wallet balance is open-ended and rides beside the window as the card's
+// balance instead of hiding it; usageOf leaves the window out only once the
+// package is spent and the wallet pays on.
 function planBalanceWindow(plan) {
   if (!plan) return null;
   const total = optionalNumber(plan.total_usd);
@@ -300,19 +303,39 @@ function planBalanceWindow(plan) {
   if (!(total > 0) || remaining === null) return null;
   const usedUSD = Math.max(0, Math.min(total, total - remaining));
   const grants = Array.isArray(plan.grants) ? plan.grants : [];
-  const expiry = grants
-    .filter((g) => number(g?.remaining_usd) > 0 && typeof g?.expires_at === "string")
-    .map((g) => g.expires_at)
-    .sort()[0];
-  const resetsAt = expiry || (typeof plan.expires_at === "string" ? plan.expires_at : "");
+  // The money lasts until the funded grant that ends first expires (use it or
+  // lose it); that grant also tells the package's own span.
+  const funded = grants.filter((g) => number(g?.remaining_usd) > 0);
+  const grant =
+    funded
+      .filter((g) => typeof g.expires_at === "string")
+      .reduce((a, b) => (a && a.expires_at <= b.expires_at ? a : b), null) ??
+    funded[0] ??
+    null;
+  const expiry =
+    grant && typeof grant.expires_at === "string"
+      ? grant.expires_at
+      : typeof plan.expires_at === "string"
+        ? plan.expires_at
+        : "";
+  // The package's own span, so magpie names and orders the window like any
+  // other ("30 days"); a server without starts_at falls back to Plan balance.
+  let span = 0;
+  if (grant && typeof grant.starts_at === "string" && expiry) {
+    const start = Date.parse(grant.starts_at);
+    const end = Date.parse(expiry);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      span = Math.round((end - start) / 1000);
+    }
+  }
   return {
-    name: "Plan balance",
+    name: span > 0 ? windowName(span) : "Plan balance",
     used: (usedUSD / total) * 100,
     amount: usedUSD,
     limit: total,
     unit: "USD",
-    span: 0,
-    ...(resetsAt ? { resetsAt } : {}),
+    span,
+    ...(expiry ? { resetsAt: expiry } : {}),
   };
 }
 
@@ -415,10 +438,16 @@ async function usageOf(key) {
   }
 
   const walletBalance = wallet ? optionalNumber(wallet.balance_usd) : null;
-  // No rate windows and no wallet: the plan balance is the whole allowance,
-  // as one window (see planBalanceWindow). bySpan, not windows: a key spend
-  // limit is a separate cap and must not hide the plan's balance.
-  if (bySpan.size === 0 && (walletBalance === null || walletBalance <= 0)) {
+  const planRemaining = plan ? optionalNumber(plan.remaining_usd) : null;
+  // No rate windows: the plan budget is the whole allowance, as one window
+  // (see planBalanceWindow). bySpan, not windows: a key spend limit is a
+  // separate cap and must not hide the plan's balance. A wallet balance rides
+  // beside it — except once the package is spent: the wallet pays past its
+  // end, and reporting the account used up would hold it back while the
+  // wallet still pays, so the wallet speaks for it then, as it did before.
+  const spentPlan = planRemaining !== null && planRemaining <= 0;
+  const walletPays = walletBalance !== null && walletBalance > 0;
+  if (bySpan.size === 0 && !(spentPlan && walletPays)) {
     const balanceWindow = planBalanceWindow(plan);
     if (balanceWindow) windows.push(balanceWindow);
   }
