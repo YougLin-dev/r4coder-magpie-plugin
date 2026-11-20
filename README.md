@@ -111,12 +111,18 @@ magpie's `magpie quota` / Usage page reads:
   remaining amount.
 
 A key limit is shown as a lifetime `Key limit` window; package windows show
-their own reset time. When a package has no rate windows (grants bought
-before R4 recorded them) and there is no wallet, the package's remaining
-money is shown as one `Plan balance` window (`used / total USD`), so magpie's
-Routes page and routing know what the account has left instead of "what's
-left not known yet". A wallet balance is open-ended, so an account that has
-one stays unknown to routing and shows the wallet balance instead.
+their own reset time. When a package has no rate windows — R4's monthly
+packages are bought as a money budget and carry none since the weekly and
+five-hour windows were retired — the package's remaining money is shown as
+one window (`used / total USD`) named by the package's own span (`30 days`
+from its `starts_at`/`expires_at`, `Plan balance` when the server tells no
+`starts_at`), so magpie's Routes page and routing know what the account has
+left instead of "what's left not known yet". A wallet balance is open-ended
+and pays past the package: it is shown as the card's balance beside that
+window, never in place of it. Once the package itself is spent, the wallet
+speaks for the account again (the window gives way, so routing is not held
+back while the wallet still pays); with no wallet, a spent package still
+shows as a 100% window.
 
 The account is named by the email `/v1/cli/meta` reports; the plugin saves it
 into the host's auth store, so magpie's account rows and Routes page show the
